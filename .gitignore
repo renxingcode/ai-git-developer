@@ -1,0 +1,10 @@
+# 编译产物
+/ai-git-developer
+*.exe
+
+# 运行日志（按 年/月/日 分目录存放）
+/logs/
+
+# IDE / 系统
+.idea/
+.DS_Store

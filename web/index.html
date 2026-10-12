@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>AI Git Developer</title>
+<link href="./assets/bootstrap.min.css" rel="stylesheet">
+<style>
+  [v-cloak]{display:none}
+  body { background:#f4f5f7; font-size:15px; -webkit-text-size-adjust:100%; }
+  .topbar { background:#1f2937; color:#fff; padding:12px 14px; position:sticky; top:0; z-index:100; }
+  .card { border:none; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:12px; }
+  .card-header { background:#fff; border-bottom:1px solid #eef0f2; font-weight:600; border-radius:12px 12px 0 0 !important; }
+  .sha { font-family:ui-monospace,Menlo,monospace; background:#eef2f7; padding:1px 6px; border-radius:4px; font-size:12.5px; }
+  .path { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; word-break:break-all; }
+  .badge-a { background:#dcfce7; color:#166534; }
+  .badge-m { background:#dbeafe; color:#1e40af; }
+  .badge-d { background:#fee2e2; color:#991b1b; }
+  .badge-r { background:#fef3c7; color:#92400e; }
+  .warn-strip { background:#fffbeb; border:1px solid #fde68a; color:#92400e; padding:8px 10px; border-radius:8px; font-size:13px; }
+  .err-strip { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; padding:8px 10px; border-radius:8px; font-size:13px; }
+  .ok-strip { background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; padding:8px 10px; border-radius:8px; font-size:13px; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.45);
+          border-top-color:#fff; border-radius:50%; animation:sp .7s linear infinite; vertical-align:-2px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  .muted-s { font-size:12px; color:#6b7280; }
+  .btn-act { padding:12px 0; font-size:15px; font-weight:600; border-radius:10px; width:100%; }
+  .ws-pill { border:1px solid #e5e7eb; border-radius:8px; padding:6px 10px; font-size:13px; cursor:pointer; background:#fff; }
+  .ws-pill.on { border-color:#6366f1; background:#eef2ff; color:#4338ca; font-weight:600; }
+
+  /* diff 区域 */
+  .file-row { border-top:1px solid #f6f7f9; padding:8px 4px; cursor:pointer; display:flex; gap:8px; align-items:center; }
+  .file-row.on { background:#eef2ff; border-radius:6px; }
+  .diff-box { background:#fff; border:1px solid #e5e7eb; border-radius:8px; overflow-x:auto; margin-top:6px; }
+  .dline { display:flex; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.55; white-space:pre; min-width:max-content; }
+  .dline.d-del { background:#fef2f2; }
+  .dline.d-add { background:#f0fdf4; }
+  .dline.d-hdr { background:#f1f5f9; color:#475569; }
+  .ln-no { width:38px; min-width:38px; text-align:right; padding-right:6px; color:#9ca3af; user-select:none; flex:0 0 auto; }
+  .ln-sign { width:14px; min-width:14px; text-align:center; user-select:none; flex:0 0 auto; }
+  .ln-text { padding-right:14px; flex:1 1 auto; }
+  .seg-del { background:#fecaca; color:#7f1d1d; border-radius:2px; }
+  .seg-add { background:#bbf7d0; color:#14532d; border-radius:2px; }
+  .tab-btn { border:none; background:transparent; padding:8px 12px; font-size:13.5px; color:#6b7280; border-bottom:2px solid transparent; }
+  .tab-btn.on { color:#4338ca; border-bottom-color:#6366f1; font-weight:600; }
+  .out-box { background:#111827; color:#d1d5db; padding:10px 12px; border-radius:8px; font-size:12px;
+             font-family:ui-monospace,Menlo,monospace; white-space:pre-wrap; word-break:break-all;
+             max-height:240px; overflow-y:auto; }
+</style>
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <div class="topbar d-flex align-items-center justify-content-between">
+    <div>
+      <div style="font-size:16px;font-weight:600">AI Git Developer</div>
+      <div style="font-size:11.5px;opacity:.72">手机端远程开发 · 审查 · 提交</div>
+    </div>
+    <div class="d-flex gap-2">
+      <button v-if="logged" class="btn btn-sm btn-outline-light" @click="load" :disabled="busy">刷新</button>
+      <button v-if="logged && needLogin" class="btn btn-sm btn-outline-light" @click="logout">退出</button>
+    </div>
+  </div>
+
+  <!-- 登录 -->
+  <div v-if="needLogin && !logged" class="container" style="padding-top:70px;max-width:340px">
+    <div class="card"><div class="card-body">
+      <div class="mb-3 fw-semibold">请输入访问口令</div>
+      <input type="password" class="form-control mb-3" v-model="pwd" @keyup.enter="login" placeholder="口令">
+      <button class="btn btn-primary w-100 py-2" @click="login" :disabled="busy">
+        <span v-if="busy" class="spin"></span> 进入
+      </button>
+      <div v-if="msg.text && !msg.ok" class="mt-3 err-strip">{{ msg.text }}</div>
+    </div></div>
+  </div>
+
+  <div v-else class="container" style="padding:12px 10px 60px;max-width:860px">
+    <div v-if="loading && !st" class="text-center py-5 text-muted">加载中…</div>
+    <div v-else-if="fatal" class="err-strip mb-3" style="white-space:pre-wrap">{{ fatal }}</div>
+
+    <template v-if="st">
+
+      <!-- 工作区选择 -->
+      <div class="card"><div class="card-body" style="padding:10px 12px;">
+        <div class="muted-s mb-1">工作区（{{ st.workspaces.length }}）</div>
+        <div class="d-flex flex-wrap gap-2">
+          <span v-for="w in st.workspaces" :key="w.name" class="ws-pill"
+                :class="{on: curName===w.name}" @click="selectWs(w.name)">
+            {{ w.name }}
+            <span v-if="!w.clean" class="badge bg-danger ms-1">{{ w.workingFiles.length }}</span>
+          </span>
+          <span v-if="!st.workspaces.length" class="muted-s">暂无工作区，请在下方【添加工作区】</span>
+        </div>
+      </div></div>
+
+      <template v-if="cur">
+        <!-- 分支与状态 -->
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>{{ cur.name }}</span>
+            <button class="btn btn-sm btn-outline-secondary" @click="doFetch" :disabled="busy">
+              <span v-if="busy&&act==='fetch'" class="spin"></span> 拉取
+            </button>
+          </div>
+          <div class="card-body" style="font-size:13px">
+            <div v-for="e in cur.errors" :key="e" class="err-strip mb-2">{{ e }}</div>
+            <div>当前分支：<b :class="cur.currentBranch===cur.draftBranch?'text-success':'text-danger'">{{ cur.currentBranch }}</b></div>
+            <div class="muted-s mt-1">目标分支 {{ cur.targetBranch }} ｜ 草稿分支 {{ cur.draftBranch }}</div>
+            <div class="muted-s mt-1">相对 origin/{{ cur.draftBranch }}：领先 {{ cur.ahead }} / 落后 {{ cur.behind }}</div>
+            <div v-if="!cur.clean" class="mt-2 warn-strip">⚠ 有 {{ cur.workingFiles.length }} 个未提交改动</div>
+            <div v-if="cur.untracked.length" class="muted-s mt-1">未跟踪新文件：{{ cur.untracked.join('、') }}</div>
+
+            <div class="row g-2 mt-1">
+              <div class="col-12 col-md-6">
+                <a class="btn btn-primary btn-act" :href="cur.previewUrl || cur.internalPreviewUrl" target="_blank" rel="noopener">🔍 预览页面效果</a>
+              </div>
+              <div class="col-12 col-md-6" v-if="cur.previewUrl">
+                <a class="btn btn-outline-secondary btn-act" :href="cur.internalPreviewUrl" target="_blank" rel="noopener">内置预览</a>
+              </div>
+            </div>
+            <div class="muted-s mt-1" v-if="cur.previewUrl">{{ cur.previewUrl }}</div>
+          </div>
+        </div>
+
+        <!-- 改动视图 -->
+        <div class="card">
+          <div class="card-header">代码改动（git diff）</div>
+          <div style="padding:0 10px;border-bottom:1px solid #eef0f2">
+            <button class="tab-btn" :class="{on:view==='working'}" @click="switchView('working')">未提交改动</button>
+            <button class="tab-btn" :class="{on:view==='branch'}" @click="switchView('branch')">草稿 vs 目标（{{ cur.branchFiles.length }}）</button>
+          </div>
+          <div class="card-body">
+            <!-- 文件列表 -->
+            <div v-for="f in viewFiles" :key="f.path" class="file-row"
+                 :class="{on: openFile===f.path}" @click="toggleFile(f.path)">
+              <span class="badge" :class="'badge-'+f.status.toLowerCase()">{{ f.status }}</span>
+              <span class="path">{{ f.path }}</span>
+              <span class="ms-auto muted-s">{{ openFile===f.path ? '▲' : '查看 ▸' }}</span>
+            </div>
+            <div v-if="!viewFiles.length" class="ok-strip">✅ 该视图下没有改动</div>
+
+            <!-- diff 内容 -->
+            <div v-if="diffFiles.length" class="diff-box mt-2">
+              <template v-for="fd in diffFiles" :key="fd.path">
+                <div class="dline d-hdr"><span class="ln-text">{{ fd.status==='A'?'新增':fd.status==='D'?'删除':'修改' }}：{{ fd.path }}</span></div>
+                <template v-for="(h,hi) in fd.hunks" :key="hi">
+                  <div class="dline d-hdr"><span class="ln-text">{{ h.header }}</span></div>
+                  <div v-for="(ln,li) in h.lines" :key="li" class="dline" :class="'d-'+ln.type">
+                    <span class="ln-no">{{ ln.oldNo || '' }}</span>
+                    <span class="ln-no">{{ ln.newNo || '' }}</span>
+                    <span class="ln-sign">{{ ln.type==='add'?'+':ln.type==='del'?'-':' ' }}</span>
+                    <span class="ln-text">
+                      <template v-if="ln.segments && ln.segments.length">
+                        <span v-for="(s,si) in ln.segments" :key="si"
+                              :class="s.type==='del'?'seg-del':(s.type==='add'?'seg-add':'')">{{ s.text }}</span>
+                      </template>
+                      <template v-else>{{ ln.text }}</template>
+                    </span>
+                  </div>
+                </template>
+                <div v-if="fd.isBinary" class="muted-s p-2">（二进制文件，不显示内容）</div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- 应用补丁 -->
+        <div class="card">
+          <div class="card-header collapse-t d-flex justify-content-between" @click="showPatch=!showPatch">
+            <span>应用补丁（AI 生成 diff 后粘贴）</span>
+            <span class="muted-s">{{ showPatch?'收起 ▲':'展开 ▼' }}</span>
+          </div>
+          <div class="card-body" v-show="showPatch">
+            <textarea class="form-control mb-2" rows="8" v-model="patchText"
+                      style="font-family:ui-monospace,Menlo,monospace;font-size:12px"
+                      placeholder="粘贴 git 统一 diff 内容（可含多个文件）"></textarea>
+            <button class="btn btn-primary w-100 py-2" @click="doPatch" :disabled="busy">
+              <span v-if="busy&&act==='patch'" class="spin"></span> 应用补丁
+            </button>
+            <div class="muted-s mt-2">补丁只应用到草稿分支工作区、不会自动提交；应用后在上方查看 diff、预览，再决定 commit。</div>
+          </div>
+        </div>
+
+        <!-- 提交操作 -->
+        <div class="card">
+          <div class="card-header">提交 / 推送</div>
+          <div class="card-body">
+            <div class="muted-s mb-1">提交备注（commit 将使用此内容，可在对话中让 AI 生成后粘贴修改）</div>
+            <textarea class="form-control mb-2" rows="4" v-model="commitMsg" style="font-size:14px"
+                      placeholder="填写本次提交备注"></textarea>
+            <div class="row g-2">
+              <div class="col-6 col-md-4">
+                <button class="btn btn-success btn-act" @click="doCommit" :disabled="busy||view!=='working'">
+                  <span v-if="busy&&act==='commit'" class="spin"></span> commit
+                </button>
+              </div>
+              <div class="col-6 col-md-4">
+                <button class="btn btn-danger btn-act" @click="doPush" :disabled="busy">
+                  <span v-if="busy&&act==='push'" class="spin"></span> push 草稿
+                </button>
+              </div>
+              <div class="col-12 col-md-4">
+                <button class="btn btn-outline-dark btn-act" @click="doDiscard" :disabled="busy">丢弃改动</button>
+              </div>
+            </div>
+            <div class="muted-s mt-2">只允许在草稿分支 <b>{{ cur.draftBranch }}</b> 提交/推送；目标分支与 main 不自动推。</div>
+          </div>
+        </div>
+
+        <!-- 提交历史 -->
+        <div class="card">
+          <div class="card-header collapse-t d-flex justify-content-between" @click="showHist=!showHist">
+            <span>草稿分支提交历史</span><span class="muted-s">{{ showHist?'收起 ▲':'展开 ▼' }}</span>
+          </div>
+          <div class="card-body" v-show="showHist">
+            <div v-for="c in cur.commits" :key="c.sha" class="d-flex gap-2 py-1" style="border-top:1px solid #f6f7f9">
+              <span class="sha">{{ c.short }}</span>
+              <span>{{ c.subject }}</span>
+              <span class="muted-s ms-auto">{{ c.date }}</span>
+            </div>
+            <div v-if="!cur.commits || !cur.commits.length" class="muted-s">（暂无历史）</div>
+          </div>
+        </div>
+      </template>
+
+      <!-- 添加工作区 -->
+      <div class="card">
+        <div class="card-header collapse-t d-flex justify-content-between" @click="showAdd=!showAdd">
+          <span>添加 / 克隆工作区</span><span class="muted-s">{{ showAdd?'收起 ▲':'展开 ▼' }}</span>
+        </div>
+        <div class="card-body" v-show="showAdd">
+          <input class="form-control mb-2" v-model="addForm.name" placeholder="工作区名称（唯一）">
+          <input class="form-control mb-2" v-model="addForm.path" placeholder="服务器路径（可空，自动放到工作区根目录）">
+          <input class="form-control mb-2" v-model="addForm.repoUrl" placeholder="仓库地址（路径不存在时用于克隆）">
+          <div class="row g-2">
+            <div class="col-6"><input class="form-control" v-model="addForm.target" placeholder="目标分支，默认 main"></div>
+            <div class="col-6"><input class="form-control" v-model="addForm.draft" placeholder="草稿分支，默认 ai-mobile-dev"></div>
+          </div>
+          <input class="form-control mt-2 mb-2" v-model="addForm.previewFile" placeholder="预览入口，默认 index.html">
+          <button class="btn btn-primary w-100 py-2" @click="doAddWorkspace" :disabled="busy">
+            <span v-if="busy&&act==='add'" class="spin"></span> 确定
+          </button>
+        </div>
+      </div>
+
+      <!-- 结果输出 -->
+      <div class="card" v-if="msg.text || output">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span :class="msg.ok?'text-success':'text-danger'">{{ msg.title || '执行结果' }}</span>
+          <a href="#" class="muted-s" @click.prevent="clearOut">清空</a>
+        </div>
+        <div class="card-body">
+          <div v-if="msg.text" :class="msg.ok?'ok-strip':'err-strip'" style="white-space:pre-wrap">{{ msg.text }}</div>
+          <div v-if="output" class="out-box mt-2">{{ output }}</div>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="card">
+        <div class="card-header collapse-t d-flex justify-content-between" @click="toggleLog">
+          <span>操作日志</span><span class="muted-s">{{ showLog?'收起 ▲':'展开 ▼' }}</span>
+        </div>
+        <div class="card-body" v-show="showLog">
+          <div class="out-box" style="max-height:280px">{{ logText || '（暂无日志）' }}</div>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script src="./assets/vue.global.prod.js"></script>
+<script>
+const { createApp, ref, computed } = Vue;
+const BASE = location.pathname.replace(/\/(index\.html)?$/, '');
+
+createApp({
+  setup() {
+    const needLogin = ref(false);
+    const logged = ref(false);
+    const st = ref(null);
+    const loading = ref(false);
+    const busy = ref(false);
+    const act = ref('');
+    const msg = ref({ text:'', ok:true, title:'' });
+    const output = ref('');
+    const fatal = ref('');
+    const pwd = ref('');
+    const curName = ref('');
+    const cur = ref(null);
+    const view = ref('working');
+    const openFile = ref('');
+    const diffFiles = ref([]);
+    const commitMsg = ref('');
+    const showHist = ref(false);
+    const showAdd = ref(false);
+    const addForm = ref({ name:'', path:'', repoUrl:'', target:'', draft:'', previewFile:'' });
+    const showPatch = ref(false);
+    const patchText = ref('');
+    const showLog = ref(false);
+    const logText = ref('');
+
+    async function api(path, opts = {}) {
+      const res = await fetch(BASE + '/api/' + path, {
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', ...opts
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (res.status === 401) { logged.value = false; throw new Error(data.error || '需要重新登录'); }
+      if (!res.ok) throw new Error(data.error || ('请求失败 ' + res.status));
+      return data;
+    }
+
+    async function load() {
+      loading.value = true;
+      try {
+        const d = await api('status');
+        st.value = d; needLogin.value = false; logged.value = true;
+        if (curName.value) await selectWs(curName.value);
+        else if (d.workspaces.length) await selectWs(d.workspaces[0].name);
+      } catch (e) {
+        if (String(e.message).indexOf('登录') >= 0) { needLogin.value = true; logged.value = false; }
+        else fatal.value = e.message;
+      } finally { loading.value = false; }
+    }
+
+    async function selectWs(name) {
+      curName.value = name;
+      const d = await api('status?ws=' + encodeURIComponent(name));
+      cur.value = d.current;
+      view.value = 'working';
+      openFile.value = ''; diffFiles.value = [];
+      commitMsg.value = '';
+    }
+
+    const viewFiles = computed(() => {
+      if (!cur.value) return [];
+      return view.value === 'working' ? cur.value.workingFiles : cur.value.branchFiles;
+    });
+
+    async function switchView(v) {
+      view.value = v; openFile.value = ''; diffFiles.value = [];
+    }
+
+    async function toggleFile(path) {
+      if (openFile.value === path) { openFile.value = ''; diffFiles.value = []; return; }
+      openFile.value = path;
+      const d = await api(`diff?ws=${encodeURIComponent(curName.value)}&view=${view.value}&file=${encodeURIComponent(path)}`);
+      diffFiles.value = d.files || [];
+    }
+
+    async function login() {
+      busy.value = true; msg.value = { text:'', ok:true, title:'' };
+      try {
+        await api('login', { method:'POST', body: JSON.stringify({ password: pwd.value }) });
+        logged.value = true; pwd.value = ''; await load();
+      } catch (e) { msg.value = { text:e.message, ok:false, title:'登录失败' }; }
+      finally { busy.value = false; }
+    }
+    async function logout() {
+      try { await api('logout', { method:'POST' }); } catch (e) {}
+      logged.value = false; st.value = null; needLogin.value = true;
+    }
+
+    async function run(action, path, opts, okTitle) {
+      busy.value = true; act.value = action;
+      msg.value = { text:'', ok:true, title:'' }; output.value = '';
+      try {
+        const d = await api(path, opts);
+        output.value = d.output || '';
+        msg.value = { text: d.message || (okTitle + '成功'), ok:true, title: okTitle };
+        await load();
+      } catch (e) {
+        msg.value = { text: e.message, ok:false, title: okTitle + '失败' };
+        await load();
+      } finally { busy.value = false; act.value = ''; }
+    }
+    function clearOut(){ msg.value={text:'',ok:true,title:''}; output.value=''; }
+
+    const doFetch = () => run('fetch', 'fetch', { method:'POST', body: JSON.stringify({ ws: curName.value }) }, '拉取');
+    const doCommit = () => {
+      if (!commitMsg.value.trim()) { msg.value={text:'请填写提交备注',ok:false,title:'commit 失败'}; return; }
+      if (!confirm('确认用该备注提交到草稿分支？')) return;
+      return run('commit','commit',{ method:'POST', body: JSON.stringify({ ws: curName.value, message: commitMsg.value }) },'commit');
+    };
+    const doPush = () => {
+      if (!confirm('推送草稿分支到 origin？（仅草稿分支，安全）')) return;
+      return run('push','push',{ method:'POST', body: JSON.stringify({ ws: curName.value }) },'push 草稿');
+    };
+    const doDiscard = () => {
+      if (!confirm('丢弃已跟踪文件的未提交改动？未跟踪的新文件会保留。')) return;
+      return run('discard','discard',{ method:'POST', body: JSON.stringify({ ws: curName.value }) },'丢弃改动');
+    };
+    const doAddWorkspace = () => {
+      const f = addForm.value;
+      if (!f.name.trim()) { msg.value={text:'请填写工作区名称',ok:false,title:'添加失败'}; return; }
+      return run('add','workspace/add',{ method:'POST', body: JSON.stringify({
+        name:f.name, path:f.path, repoUrl:f.repoUrl, target:f.target, draft:f.draft, previewFile:f.previewFile
+      }) },'添加工作区');
+    };
+    const doPatch = () => {
+      if (!patchText.value.trim()) { msg.value={text:'请粘贴补丁内容',ok:false,title:'应用补丁失败'}; return; }
+      if (!confirm('确认将该补丁应用到草稿分支工作区？')) return;
+      return run('patch','patch',{ method:'POST', body: JSON.stringify({
+        ws: curName.value, patch: patchText.value
+      }) },'应用补丁').then(()=>{ patchText.value=''; });
+    };
+
+    async function toggleLog() {
+      showLog.value = !showLog.value;
+      if (showLog.value) {
+        try { const d = await api('log'); logText.value = (d.lines||[]).join('\n'); }
+        catch (e) { logText.value = e.message; }
+      }
+    }
+
+    // 初始化：自动用已有 cookie 尝试登录，有效直接进入、无效才停在登录页（修复刷新即退出）
+    load();
+
+    return { st, loading, busy, act, msg, output, fatal, logged, pwd, needLogin,
+      curName, cur, view, openFile, diffFiles, viewFiles, commitMsg, showHist,
+      showAdd, addForm, showPatch, patchText, showLog, logText,
+      load, login, logout, selectWs, switchView, toggleFile,
+      doFetch, doCommit, doPush, doDiscard, doAddWorkspace, doPatch, toggleLog, clearOut };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
