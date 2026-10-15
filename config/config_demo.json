@@ -1,0 +1,18 @@
+{
+  "listenAddr": "127.0.0.1:8767",
+  "port": 8767,
+  "password": "your_strong_password",
+  "basePath": "",
+  "workspaceRoot": "",
+  "workspaces": [
+    {
+      "name": "your_project",
+      "path": "/root/code/your_project",
+      "repoUrl": "git@gitee:yourname/your_project.git",
+      "targetBranch": "main",
+      "draftBranch": "ai-mobile-dev",
+      "previewFile": "html/index.html",
+      "previewUrl": "http://1.2.3.4/your_project/html/index.html"
+    }
+  ]
+}
