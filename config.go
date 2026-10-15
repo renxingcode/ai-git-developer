@@ -23,12 +23,11 @@ type Workspace struct {
 
 // Config 工具全局配置
 type Config struct {
-	ListenAddr    string      `json:"listenAddr"`    // 监听地址，默认 127.0.0.1:8767
-	Port          int         `json:"port"`          // 监听端口（兼容字段）
-	Password      string      `json:"password"`      // 访问口令，空表示不鉴权
-	BasePath      string      `json:"basePath"`      // 反代前缀，如 /ai-git-developer
-	WorkspaceRoot string      `json:"workspaceRoot"` // 克隆工作区的默认根目录
-	Workspaces    []Workspace `json:"workspaces"`    // 已注册工作区
+	ListenAddr string      `json:"listenAddr"` // 监听地址，默认 127.0.0.1:8767
+	Port       int         `json:"port"`       // 监听端口（兼容字段）
+	Password   string      `json:"password"`   // 访问口令，空表示不鉴权
+	BasePath   string      `json:"basePath"`   // 反代前缀，如 /ai-git-developer
+	Workspaces []Workspace `json:"workspaces"` // 已注册工作区
 }
 
 // Store 负责配置持久化与操作日志（config/ 与 logs/ 分目录存放）
@@ -46,7 +45,7 @@ func NewStore(cfgDir, logDir string) (*Store, error) {
 	}
 	s := &Store{cfgDir: cfgDir, logDir: logDir, cfg: defaultConfig()}
 	if b, err := os.ReadFile(filepath.Join(cfgDir, "config.json")); err == nil {
-		_ = json.Unmarshal(b, s.cfg)
+		_ = json.Unmarshal(stripJSONComments(b), s.cfg)
 		if s.cfg.ListenAddr == "" {
 			s.cfg.ListenAddr = defaultConfig().ListenAddr
 		}
@@ -54,12 +53,50 @@ func NewStore(cfgDir, logDir string) (*Store, error) {
 	return s, nil
 }
 
+// stripJSONComments 去除 JSON 文本中的 // 行注释与 /* */ 块注释，
+// 使 config.json 可直接书写中文说明；字符串值内部（如 http://xxx）不受影响。
+func stripJSONComments(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	inStr := false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		switch {
+		case inStr:
+			out = append(out, c)
+			if c == '\\' && i+1 < len(b) { // 转义字符原样保留
+				out = append(out, b[i+1])
+				i++
+			} else if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+			out = append(out, c)
+		case c == '/' && i+1 < len(b) && b[i+1] == '/': // 行注释：跳到行尾（保留换行）
+			for i < len(b) && b[i] != '\n' {
+				i++
+			}
+			if i < len(b) {
+				out = append(out, '\n')
+			}
+		case c == '/' && i+1 < len(b) && b[i+1] == '*': // 块注释
+			i += 2
+			for i+1 < len(b) && !(b[i] == '*' && b[i+1] == '/') {
+				i++
+			}
+			i++ // 跳过闭合的 '/'，外层 for 再自增越过
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func defaultConfig() *Config {
 	return &Config{
-		ListenAddr:    "127.0.0.1:8767",
-		Port:          8767,
-		WorkspaceRoot: "/root/code/ai-workspaces",
-		Workspaces:    []Workspace{},
+		ListenAddr: "127.0.0.1:8767",
+		Port:       8767,
+		Workspaces: []Workspace{},
 	}
 }
 

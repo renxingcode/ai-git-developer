@@ -87,14 +87,14 @@ func main() {
 	mux.HandleFunc(prefix+"/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc(prefix+"/api/diff", s.auth(s.handleDiff))
 	// 工作区管理
-	mux.HandleFunc(prefix+"/api/workspace/add", s.auth(s.handleWorkspaceAdd))
-	mux.HandleFunc(prefix+"/api/workspace/remove", s.auth(s.handleWorkspaceRemove))
-	// 提交 / 推送 / 丢弃 / 拉取
-	mux.HandleFunc(prefix+"/api/commit", s.auth(s.handleCommit))
-	mux.HandleFunc(prefix+"/api/push", s.auth(s.handlePush))
-	mux.HandleFunc(prefix+"/api/discard", s.auth(s.handleDiscard))
-	mux.HandleFunc(prefix+"/api/patch", s.auth(s.handlePatch))
-	mux.HandleFunc(prefix+"/api/fetch", s.auth(s.handleFetch))
+	mux.HandleFunc(prefix+"/api/workspace/add", s.auth(s.locked(s.handleWorkspaceAdd)))
+	mux.HandleFunc(prefix+"/api/workspace/remove", s.auth(s.locked(s.handleWorkspaceRemove)))
+	// 提交 / 推送 / 丢弃 / 拉取（写操作全部经互斥锁串行化）
+	mux.HandleFunc(prefix+"/api/commit", s.auth(s.locked(s.handleCommit)))
+	mux.HandleFunc(prefix+"/api/push", s.auth(s.locked(s.handlePush)))
+	mux.HandleFunc(prefix+"/api/discard", s.auth(s.locked(s.handleDiscard)))
+	mux.HandleFunc(prefix+"/api/patch", s.auth(s.locked(s.handlePatch)))
+	mux.HandleFunc(prefix+"/api/fetch", s.auth(s.locked(s.handleFetch)))
 	// 内置预览
 	mux.HandleFunc(prefix+"/api/preview", s.auth(s.handlePreview))
 	// 日志
@@ -102,7 +102,6 @@ func main() {
 
 	addr := cfg.ListenAddr
 	log.Printf("AI Git Developer 已启动: %s（配置目录 %s，日志目录 %s）", addr, configDir, logsDir)
-	log.Printf("工作区根目录: %s", cfg.WorkspaceRoot)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
@@ -153,6 +152,15 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		writeErr(w, http.StatusUnauthorized, "未登录或登录已过期，请重新输入口令")
+	}
+}
+
+// locked 将写操作在服务端串行化，避免并发请求同时操作同一仓库
+func (s *Server) locked(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		next(w, r)
 	}
 }
 
@@ -375,7 +383,8 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSpace(body.Path)
 	if path == "" {
-		path = filepath.Join(s.store.Config().WorkspaceRoot, name)
+		writeErr(w, http.StatusBadRequest, "请填写服务器路径（前端项目的绝对路径）")
+		return
 	}
 
 	// 路径不存在则克隆
@@ -569,10 +578,26 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	if rel == "" {
 		rel = "index.html"
 	}
-	// 防目录穿越
+	// 防目录穿越：先做词法规范化，再解析符号链接，防止 ../ 或软链逃逸出工作区根
 	base := filepath.Clean(ws.Path)
 	full := filepath.Join(base, filepath.Clean("/"+rel))
-	if !strings.HasPrefix(full, base+string(os.PathSeparator)) && full != base {
+	if !withinDir(full, base) {
+		writeErr(w, http.StatusBadRequest, "非法路径")
+		return
+	}
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// 目标可能尚不存在，此时其父目录必须仍在工作区内；存在则解析其真实路径
+	realFull := full
+	if _, err := os.Lstat(full); err == nil {
+		if rf, err := filepath.EvalSymlinks(full); err == nil {
+			realFull = rf
+		}
+	}
+	if !withinDir(realFull, realBase) {
 		writeErr(w, http.StatusBadRequest, "非法路径")
 		return
 	}
@@ -601,6 +626,11 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 辅助 ----------
+
+// withinDir 判断目标路径是否等于或位于根目录之内（要求两个路径均为已 Clean 的绝对路径）
+func withinDir(target, root string) bool {
+	return target == root || strings.HasPrefix(target, root+string(os.PathSeparator))
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

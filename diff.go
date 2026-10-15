@@ -30,11 +30,11 @@ type Hunk struct {
 
 // FileDiff 一个文件的完整 diff
 type FileDiff struct {
-	Path     string  `json:"path"`
-	OldPath  string  `json:"oldPath"`
-	Status   string  `json:"status"` // M / A / D / R
-	IsBinary bool    `json:"isBinary"`
-	Hunks    []Hunk  `json:"hunks"`
+	Path     string `json:"path"`
+	OldPath  string `json:"oldPath"`
+	Status   string `json:"status"` // M / A / D / R
+	IsBinary bool   `json:"isBinary"`
+	Hunks    []Hunk `json:"hunks"`
 }
 
 var hunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
