@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,9 +84,9 @@ func main() {
 	// 鉴权 / 会话
 	mux.HandleFunc(prefix+"/api/login", s.handleLogin)
 	mux.HandleFunc(prefix+"/api/logout", s.handleLogout)
-	// 状态与 diff
+	// 状态与 diff（diff 会执行 git add -N 刷新未跟踪文件，也纳入互斥锁）
 	mux.HandleFunc(prefix+"/api/status", s.auth(s.handleStatus))
-	mux.HandleFunc(prefix+"/api/diff", s.auth(s.handleDiff))
+	mux.HandleFunc(prefix+"/api/diff", s.auth(s.locked(s.handleDiff)))
 	// 工作区管理
 	mux.HandleFunc(prefix+"/api/workspace/add", s.auth(s.locked(s.handleWorkspaceAdd)))
 	mux.HandleFunc(prefix+"/api/workspace/remove", s.auth(s.locked(s.handleWorkspaceRemove)))
@@ -95,8 +96,9 @@ func main() {
 	mux.HandleFunc(prefix+"/api/discard", s.auth(s.locked(s.handleDiscard)))
 	mux.HandleFunc(prefix+"/api/patch", s.auth(s.locked(s.handlePatch)))
 	mux.HandleFunc(prefix+"/api/fetch", s.auth(s.locked(s.handleFetch)))
-	// 内置预览
+	// 内置预览（query 形式 302 到路径式地址，路径式地址才能让浏览器正确解析相对资源）
 	mux.HandleFunc(prefix+"/api/preview", s.auth(s.handlePreview))
+	mux.HandleFunc(prefix+"/api/preview/", s.auth(s.handlePreviewTree))
 	// 日志
 	mux.HandleFunc(prefix+"/api/log", s.auth(s.handleLog))
 
@@ -269,18 +271,23 @@ func (s *Server) buildWs(ws Workspace, r *http.Request) WsStatus {
 		}
 	}
 
-	// 内置预览地址
+	// 内置预览地址（路径式，页面中的相对资源可被浏览器正确解析）
 	pf := ws.PreviewFile
 	if pf == "" {
 		pf = "index.html"
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	st.InternalPreviewURL = fmt.Sprintf("%s://%s%s/api/preview?ws=%s&p=%s",
-		scheme, r.Host, s.store.Config().BasePath, ws.Name, pf)
+	st.InternalPreviewURL = previewPath(s.store.Config().BasePath, ws.Name, pf)
 	return st
+}
+
+// previewPath 构造路径式预览地址，如 /base/api/preview/<ws>/html/index.html，
+// 使 HTML 中以相对路径引用的 css/js 能被浏览器解析到同一子树
+func previewPath(basePath, wsName, rel string) string {
+	segs := strings.Split(strings.TrimPrefix(rel, "/"), "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return basePath + "/api/preview/" + url.PathEscape(wsName) + "/" + strings.Join(segs, "/")
 }
 
 // parseNameStatus 解析 git diff --name-status 输出
@@ -367,6 +374,11 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(body.Name)
 	if name == "" {
 		writeErr(w, http.StatusBadRequest, "请填写工作区名称")
+		return
+	}
+	// 名称会出现在路径式预览 URL 中，不允许包含路径分隔符
+	if strings.ContainsAny(name, `/\`) {
+		writeErr(w, http.StatusBadRequest, "工作区名称不能包含 / 或 \\")
 		return
 	}
 	target := strings.TrimSpace(body.Target)
@@ -565,8 +577,10 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 内置预览（静态文件） ----------
 
+// handlePreview 兼容 query 形式 /api/preview?ws=..&p=..：统一重定向到路径式地址
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.store.GetWorkspace(r.URL.Query().Get("ws"))
+	wsName := r.URL.Query().Get("ws")
+	ws, ok := s.store.GetWorkspace(wsName)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "未知工作区")
 		return
@@ -578,6 +592,26 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	if rel == "" {
 		rel = "index.html"
 	}
+	http.Redirect(w, r, previewPath(s.store.Config().BasePath, wsName, rel), http.StatusFound)
+}
+
+// handlePreviewTree 路径式预览 /api/preview/<ws>/<文件相对路径>
+func (s *Server) handlePreviewTree(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, s.store.Config().BasePath+"/api/preview/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ws, ok := s.store.GetWorkspace(parts[0])
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "未知工作区")
+		return
+	}
+	s.servePreviewFile(w, r, ws, parts[1])
+}
+
+func (s *Server) servePreviewFile(w http.ResponseWriter, r *http.Request, ws Workspace, rel string) {
 	// 防目录穿越：先做词法规范化，再解析符号链接，防止 ../ 或软链逃逸出工作区根
 	base := filepath.Clean(ws.Path)
 	full := filepath.Join(base, filepath.Clean("/"+rel))
@@ -590,12 +624,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// 目标可能尚不存在，此时其父目录必须仍在工作区内；存在则解析其真实路径
-	realFull := full
-	if _, err := os.Lstat(full); err == nil {
-		if rf, err := filepath.EvalSymlinks(full); err == nil {
-			realFull = rf
-		}
+	// 解析最终真实路径：目标存在则解析其自身；不存在则向上找到最近的存在目录解析后再拼回
+	// （典型场景：工作区位于 /tmp 这类本身是软链的目录，词法路径与真实路径前缀不同）
+	realFull, err := resolveExistingAncestor(full)
+	if err != nil {
+		http.NotFound(w, r)
+		return
 	}
 	if !withinDir(realFull, realBase) {
 		writeErr(w, http.StatusBadRequest, "非法路径")
@@ -630,6 +664,31 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 // withinDir 判断目标路径是否等于或位于根目录之内（要求两个路径均为已 Clean 的绝对路径）
 func withinDir(target, root string) bool {
 	return target == root || strings.HasPrefix(target, root+string(os.PathSeparator))
+}
+
+// resolveExistingAncestor 自目标向上找到最近的存在路径，解析符号链接后再拼回未存在的剩余部分，
+// 使尚不存在的目标也能基于真实路径判断是否逃逸；任何祖先目录都不存在时返回错误
+func resolveExistingAncestor(p string) (string, error) {
+	existing, suffix := p, ""
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		}
+		suffix = filepath.Join(filepath.Base(existing), suffix)
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", os.ErrNotExist
+		}
+		existing = parent
+	}
+	real, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	if suffix == "" {
+		return real, nil
+	}
+	return filepath.Join(real, suffix), nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

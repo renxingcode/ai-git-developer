@@ -230,7 +230,7 @@
         </div>
         <div class="card-body" v-show="showAdd">
           <input class="form-control mb-2" v-model="addForm.name" placeholder="工作区名称（唯一）">
-          <input class="form-control mb-2" v-model="addForm.path" placeholder="服务器路径（可空，自动放到工作区根目录）">
+          <input class="form-control mb-2" v-model="addForm.path" placeholder="服务器路径（必填，前端项目绝对路径）">
           <input class="form-control mb-2" v-model="addForm.repoUrl" placeholder="仓库地址（路径不存在时用于克隆）">
           <div class="row g-2">
             <div class="col-6"><input class="form-control" v-model="addForm.target" placeholder="目标分支，默认 main"></div>
